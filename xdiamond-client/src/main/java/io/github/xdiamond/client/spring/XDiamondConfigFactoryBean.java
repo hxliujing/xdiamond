@@ -141,6 +141,10 @@ public class XDiamondConfigFactoryBean implements ApplicationContextAware, Prior
         firstScan(scanPackageList);
     }
     public void firstScan(List<String> packageNameList) {
+        if(scanPackageList==null){
+            scanPackageList = new ArrayList<>();
+        }
+        scanPackageList.add("io.github.xdiamond.client.annotation");
         Reflections reflections = getReflection(packageNameList);
         Set<Class<?>> classdata2 = reflections.getTypesAnnotatedWith(XDiamondFile.class);
         this.classdata = classdata2;
