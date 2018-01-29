@@ -1,15 +1,17 @@
 package io.github.xdiamond.client.spring;
-
-import java.io.IOException;
-import java.io.InputStream;
-import java.lang.reflect.Method;
-import java.util.Collections;
-import java.util.List;
-import java.util.Map.Entry;
-import java.util.Properties;
-
+import com.google.common.base.Predicate;
+import io.github.xdiamond.client.XDiamondConfig;
+import io.github.xdiamond.client.annotation.AllKeyListener;
+import io.github.xdiamond.client.annotation.OneKeyListener;
+import io.github.xdiamond.client.annotation.XDiamondFile;
+import io.github.xdiamond.client.event.ObjectListenerMethodInvokeWrapper;
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
+import org.reflections.Reflections;
+import org.reflections.scanners.*;
+import org.reflections.util.ClasspathHelper;
+import org.reflections.util.ConfigurationBuilder;
+import org.reflections.util.FilterBuilder;
 import org.springframework.beans.BeansException;
 import org.springframework.beans.factory.FactoryBean;
 import org.springframework.beans.factory.InitializingBean;
@@ -25,10 +27,13 @@ import org.springframework.util.PropertyPlaceholderHelper;
 import org.springframework.util.ReflectionUtils;
 import org.springframework.util.StringUtils;
 
-import io.github.xdiamond.client.XDiamondConfig;
-import io.github.xdiamond.client.annotation.AllKeyListener;
-import io.github.xdiamond.client.annotation.OneKeyListener;
-import io.github.xdiamond.client.event.ObjectListenerMethodInvokeWrapper;
+import java.io.IOException;
+import java.io.InputStream;
+import java.lang.reflect.Method;
+import java.net.URL;
+import java.util.*;
+import java.util.Map.Entry;
+
 
 /**
  * 支持${value:default}方式的配置； 支持在locations参数里，配置properties； 优先从System.getPropeties()里加载配置；
@@ -37,341 +42,393 @@ import io.github.xdiamond.client.event.ObjectListenerMethodInvokeWrapper;
  *
  */
 public class XDiamondConfigFactoryBean implements ApplicationContextAware, PriorityOrdered, BeanFactoryPostProcessor,
-    InitializingBean, FactoryBean<XDiamondConfig>, BeanPostProcessor {
-  private static final Log logger = LogFactory.getLog(XDiamondConfigFactoryBean.class);
-  PropertyPlaceholderHelper helper = new PropertyPlaceholderHelper("${", "}", ":", true);
+        InitializingBean, FactoryBean<XDiamondConfig>, BeanPostProcessor {
+    private static final Log logger = LogFactory.getLog(XDiamondConfigFactoryBean.class);
+    PropertyPlaceholderHelper helper = new PropertyPlaceholderHelper("${", "}", ":", true);
 
-  int order = 0;
-  ApplicationContext context;
+    int order = 0;
+    public static ApplicationContext context;
 
-  boolean bScanListenerAnnotation = true;
+    boolean bScanListenerAnnotation = true;
 
-  List<String> locations = Collections.emptyList();
+    List<String> locations = Collections.emptyList();
 
-  Properties properties = new Properties();
+    Properties properties = new Properties();
 
-  String groupId;
+    String groupId;
 
-  String artifactId;
-  String version;
-  String profile;
-  String secretKey;
+    String artifactId;
+    String version;
+    String profile;
+    String secretKey;
 
-  String serverHost;
-  String serverPort;
+    String serverHost;
+    String serverPort;
 
-  // 启动时，是否打印获取到的配置信息
-  String bPrintConfigWhenBoot;
-  // 获取到配置，是否同步到System Properties里
-  String bSyncToSystemProperties;
+    // 启动时，是否打印获取到的配置信息
+    String bPrintConfigWhenBoot;
+    // 获取到配置，是否同步到System Properties里
+    String bSyncToSystemProperties;
 
-  // 指数退避的方式增加
-  String bBackOffRetryInterval;
-  // 失败重试的次数
-  String maxRetryTimes;
-  // 失败重试的时间间隔
-  String retryIntervalSeconds;
-  // 最大的重试时间间隔
-  String maxRetryIntervalSeconds;
+    // 指数退避的方式增加
+    String bBackOffRetryInterval;
+    // 失败重试的次数
+    String maxRetryTimes;
+    // 失败重试的时间间隔
+    String retryIntervalSeconds;
+    // 最大的重试时间间隔
+    String maxRetryIntervalSeconds;
 
-  XDiamondConfig xDiamondConfig;
+    XDiamondConfig xDiamondConfig;
+    List<String> scanPackageList;
 
-  public void setOrder(int order) {
-    this.order = order;
-  }
+    Set<Class<?>> classdata;
 
-  @Override
-  public int getOrder() {
-    return order;
-  }
+    public void setScanPackageList(List<String> scanPackageList) {
+        this.scanPackageList = scanPackageList;
+    }
 
-  @Override
-  public void postProcessBeanFactory(ConfigurableListableBeanFactory beanFactory)
-      throws BeansException {
+    public void setOrder(int order) {
+        this.order = order;
+    }
 
-  }
+    @Override
+    public int getOrder() {
+        return order;
+    }
 
-  @Override
-  public void setApplicationContext(ApplicationContext applicationContext) throws BeansException {
-    this.context = applicationContext;
-    for (String location : locations) {
-      try {
-        Resource[] resources = context.getResources(location);
-        if (resources != null) {
-          for (Resource resource : resources) {
-            InputStream inputStream = null;
+    @Override
+    public void postProcessBeanFactory(ConfigurableListableBeanFactory beanFactory)
+            throws BeansException {
+
+    }
+
+    @Override
+    public void setApplicationContext(ApplicationContext applicationContext) throws BeansException {
+        this.context = applicationContext;
+        for (String location : locations) {
             try {
-              inputStream = resource.getInputStream();
-              properties.load(inputStream);
-            } finally {
-              if (inputStream != null) {
-                inputStream.close();
-              }
-            }
+                Resource[] resources = context.getResources(location);
+                if (resources != null) {
+                    for (Resource resource : resources) {
+                        InputStream inputStream = null;
+                        try {
+                            inputStream = resource.getInputStream();
+                            properties.load(inputStream);
+                        } finally {
+                            if (inputStream != null) {
+                                inputStream.close();
+                            }
+                        }
 
-          }
+                    }
+                }
+
+            } catch (IOException e) {
+                logger.error("can not load resources, location:" + location, e);
+            }
         }
 
-      } catch (IOException e) {
-        logger.error("can not load resources, location:" + location, e);
-      }
-    }
+        /**
+         * merge properties form System.getProperties();
+         */
+        Properties sysProperties = System.getProperties();
+        for (Entry<Object, Object> entry : sysProperties.entrySet()) {
+            properties.put(entry.getKey(), entry.getValue());
+        }
 
+
+        firstScan(scanPackageList);
+    }
+    public void firstScan(List<String> packageNameList) {
+        Reflections reflections = getReflection(packageNameList);
+        Set<Class<?>> classdata2 = reflections.getTypesAnnotatedWith(XDiamondFile.class);
+        this.classdata = classdata2;
+    }
+    public Set<Class<?>> getClassData(){
+        return this.classdata;
+    }
     /**
-     * merge properties form System.getProperties();
+     * 通过扫描，获取反射对象
      */
-    Properties sysProperties = System.getProperties();
-    for (Entry<Object, Object> entry : sysProperties.entrySet()) {
-      properties.put(entry.getKey(), entry.getValue());
-    }
-  }
+    private   Reflections getReflection(List<String> packNameList) {
+        //
+        // filter
+        //
+        FilterBuilder filterBuilder = new FilterBuilder();
 
-  @Override
-  public void afterPropertiesSet() throws Exception {
-    xDiamondConfig = new XDiamondConfig();
+        for (String packName : packNameList) {
+            filterBuilder = filterBuilder.includePackage(packName);
+        }
+        Predicate<String> filter = filterBuilder;
+        //
+        // urls
+        //
+        Collection<URL> urlTotals = new ArrayList<URL>();
+        for (String packName : packNameList) {
+            Set<URL> urls =  ClasspathHelper.forPackage(packName);
+            urlTotals.addAll(urls);
+        }
+        //
+        Reflections reflections = new Reflections(new ConfigurationBuilder().filterInputsBy(filter)
+                .setScanners(new SubTypesScanner().filterResultsBy(filter),
+                        new TypeAnnotationsScanner()
+                                .filterResultsBy(filter),
+                        new FieldAnnotationsScanner()
+                                .filterResultsBy(filter),
+                        new MethodAnnotationsScanner()
+                                .filterResultsBy(filter),
+                        new MethodParameterScanner()).setUrls(urlTotals));
 
-    if (!StringUtils.isEmpty(groupId)) {
-      groupId = helper.replacePlaceholders(groupId, properties);
-      xDiamondConfig.setGroupId(groupId);
-    }
-
-    if (!StringUtils.isEmpty(artifactId)) {
-      artifactId = helper.replacePlaceholders(artifactId, properties);
-      xDiamondConfig.setArtifactId(artifactId);
-    }
-
-    if (!StringUtils.isEmpty(profile)) {
-      profile = helper.replacePlaceholders(profile, properties);
-      xDiamondConfig.setProfile(profile);
-    }
-
-    if (!StringUtils.isEmpty(version)) {
-      version = helper.replacePlaceholders(version, properties);
-      xDiamondConfig.setVersion(version);
-    }
-
-    if (secretKey != null) {
-      secretKey = helper.replacePlaceholders(secretKey, properties);
-      xDiamondConfig.setSecretKey(secretKey);
+        return reflections;
     }
 
-    if (!StringUtils.isEmpty(serverHost)) {
-      serverHost = helper.replacePlaceholders(serverHost, properties);
-      xDiamondConfig.setServerHost(serverHost);
+    @Override
+    public void afterPropertiesSet() throws Exception {
+        xDiamondConfig = new XDiamondConfig();
+
+        if (!StringUtils.isEmpty(groupId)) {
+            groupId = helper.replacePlaceholders(groupId, properties);
+            xDiamondConfig.setGroupId(groupId);
+        }
+
+        if (!StringUtils.isEmpty(artifactId)) {
+            artifactId = helper.replacePlaceholders(artifactId, properties);
+            xDiamondConfig.setArtifactId(artifactId);
+        }
+
+        if (!StringUtils.isEmpty(profile)) {
+            profile = helper.replacePlaceholders(profile, properties);
+            xDiamondConfig.setProfile(profile);
+        }
+
+        if (!StringUtils.isEmpty(version)) {
+            version = helper.replacePlaceholders(version, properties);
+            xDiamondConfig.setVersion(version);
+        }
+
+        if (secretKey != null) {
+            secretKey = helper.replacePlaceholders(secretKey, properties);
+            xDiamondConfig.setSecretKey(secretKey);
+        }
+
+        if (!StringUtils.isEmpty(serverHost)) {
+            serverHost = helper.replacePlaceholders(serverHost, properties);
+            xDiamondConfig.setServerHost(serverHost);
+        }
+
+        if (!StringUtils.isEmpty(serverPort)) {
+            serverPort = helper.replacePlaceholders(serverPort, properties);
+            xDiamondConfig.setServerPort(Integer.parseInt(serverPort));
+        }
+
+        if (!StringUtils.isEmpty(bPrintConfigWhenBoot)) {
+            bPrintConfigWhenBoot = helper.replacePlaceholders(bPrintConfigWhenBoot, properties);
+            xDiamondConfig.setbPrintConfigWhenBoot(Boolean.parseBoolean(bPrintConfigWhenBoot));
+        }
+
+        if (!StringUtils.isEmpty(bSyncToSystemProperties)) {
+            bSyncToSystemProperties = helper.replacePlaceholders(bSyncToSystemProperties, properties);
+            xDiamondConfig.setbSyncToSystemProperties(Boolean.parseBoolean(bSyncToSystemProperties));
+        }
+
+        if (!StringUtils.isEmpty(bBackOffRetryInterval)) {
+            bBackOffRetryInterval = helper.replacePlaceholders(bBackOffRetryInterval, properties);
+            xDiamondConfig.setbBackOffRetryInterval(Boolean.parseBoolean(bBackOffRetryInterval));
+        }
+
+        if (!StringUtils.isEmpty(maxRetryTimes)) {
+            maxRetryTimes = helper.replacePlaceholders(maxRetryTimes, properties);
+            xDiamondConfig.setMaxRetryTimes(Integer.parseInt(maxRetryTimes));
+        }
+
+        if (!StringUtils.isEmpty(retryIntervalSeconds)) {
+            retryIntervalSeconds = helper.replacePlaceholders(retryIntervalSeconds, properties);
+            xDiamondConfig.setRetryIntervalSeconds(Integer.parseInt(retryIntervalSeconds));
+        }
+
+        if (!StringUtils.isEmpty(maxRetryIntervalSeconds)) {
+            maxRetryIntervalSeconds = helper.replacePlaceholders(maxRetryIntervalSeconds, properties);
+            xDiamondConfig.setMaxRetryIntervalSeconds(Integer.parseInt(maxRetryIntervalSeconds));
+        }
+
+        xDiamondConfig.init();
     }
 
-    if (!StringUtils.isEmpty(serverPort)) {
-      serverPort = helper.replacePlaceholders(serverPort, properties);
-      xDiamondConfig.setServerPort(Integer.parseInt(serverPort));
+    @Override
+    public XDiamondConfig getObject() throws Exception {
+        return xDiamondConfig;
     }
 
-    if (!StringUtils.isEmpty(bPrintConfigWhenBoot)) {
-      bPrintConfigWhenBoot = helper.replacePlaceholders(bPrintConfigWhenBoot, properties);
-      xDiamondConfig.setbPrintConfigWhenBoot(Boolean.parseBoolean(bPrintConfigWhenBoot));
+    @Override
+    public Class<?> getObjectType() {
+        return XDiamondConfig.class;
     }
 
-    if (!StringUtils.isEmpty(bSyncToSystemProperties)) {
-      bSyncToSystemProperties = helper.replacePlaceholders(bSyncToSystemProperties, properties);
-      xDiamondConfig.setbSyncToSystemProperties(Boolean.parseBoolean(bSyncToSystemProperties));
+    @Override
+    public boolean isSingleton() {
+        return true;
     }
 
-    if (!StringUtils.isEmpty(bBackOffRetryInterval)) {
-      bBackOffRetryInterval = helper.replacePlaceholders(bBackOffRetryInterval, properties);
-      xDiamondConfig.setbBackOffRetryInterval(Boolean.parseBoolean(bBackOffRetryInterval));
+    public String getGroupId() {
+        return groupId;
     }
 
-    if (!StringUtils.isEmpty(maxRetryTimes)) {
-      maxRetryTimes = helper.replacePlaceholders(maxRetryTimes, properties);
-      xDiamondConfig.setMaxRetryTimes(Integer.parseInt(maxRetryTimes));
+    public void setGroupId(String groupId) {
+        this.groupId = groupId;
     }
 
-    if (!StringUtils.isEmpty(retryIntervalSeconds)) {
-      retryIntervalSeconds = helper.replacePlaceholders(retryIntervalSeconds, properties);
-      xDiamondConfig.setRetryIntervalSeconds(Integer.parseInt(retryIntervalSeconds));
+    public String getVersion() {
+        return version;
     }
 
-    if (!StringUtils.isEmpty(maxRetryIntervalSeconds)) {
-      maxRetryIntervalSeconds = helper.replacePlaceholders(maxRetryIntervalSeconds, properties);
-      xDiamondConfig.setMaxRetryIntervalSeconds(Integer.parseInt(maxRetryIntervalSeconds));
+    public void setVersion(String version) {
+        this.version = version;
     }
 
-    xDiamondConfig.init();
-  }
+    public String getProfile() {
+        return profile;
+    }
 
-  @Override
-  public XDiamondConfig getObject() throws Exception {
-    return xDiamondConfig;
-  }
+    public void setProfile(String profile) {
+        this.profile = profile;
+    }
 
-  @Override
-  public Class<?> getObjectType() {
-    return XDiamondConfig.class;
-  }
+    public String getServerHost() {
+        return serverHost;
+    }
 
-  @Override
-  public boolean isSingleton() {
-    return true;
-  }
+    public void setServerHost(String serverHost) {
+        this.serverHost = serverHost;
+    }
 
-  public String getGroupId() {
-    return groupId;
-  }
+    public String getServerPort() {
+        return serverPort;
+    }
 
-  public void setGroupId(String groupId) {
-    this.groupId = groupId;
-  }
+    public void setServerPort(String serverPort) {
+        this.serverPort = serverPort;
+    }
 
-  public String getVersion() {
-    return version;
-  }
+    public List<String> getLocations() {
+        return locations;
+    }
 
-  public void setVersion(String version) {
-    this.version = version;
-  }
+    public void setLocations(List<String> locations) {
+        this.locations = locations;
+    }
 
-  public String getProfile() {
-    return profile;
-  }
+    public String getArtifactId() {
+        return artifactId;
+    }
 
-  public void setProfile(String profile) {
-    this.profile = profile;
-  }
+    public void setArtifactId(String artifactId) {
+        this.artifactId = artifactId;
+    }
 
-  public String getServerHost() {
-    return serverHost;
-  }
+    public boolean isbScanListenerAnnotation() {
+        return bScanListenerAnnotation;
+    }
 
-  public void setServerHost(String serverHost) {
-    this.serverHost = serverHost;
-  }
+    public void setbScanListenerAnnotation(boolean bScanListenerAnnotation) {
+        this.bScanListenerAnnotation = bScanListenerAnnotation;
+    }
 
-  public String getServerPort() {
-    return serverPort;
-  }
+    public String getSecretKey() {
+        return secretKey;
+    }
 
-  public void setServerPort(String serverPort) {
-    this.serverPort = serverPort;
-  }
+    public void setSecretKey(String secretKey) {
+        this.secretKey = secretKey;
+    }
 
-  public List<String> getLocations() {
-    return locations;
-  }
+    public String getbPrintConfigWhenBoot() {
+        return bPrintConfigWhenBoot;
+    }
 
-  public void setLocations(List<String> locations) {
-    this.locations = locations;
-  }
+    public void setbPrintConfigWhenBoot(String bPrintConfigWhenBoot) {
+        this.bPrintConfigWhenBoot = bPrintConfigWhenBoot;
+    }
 
-  public String getArtifactId() {
-    return artifactId;
-  }
+    public String getbSyncToSystemProperties() {
+        return bSyncToSystemProperties;
+    }
 
-  public void setArtifactId(String artifactId) {
-    this.artifactId = artifactId;
-  }
+    public void setbSyncToSystemProperties(String bSyncToSystemProperties) {
+        this.bSyncToSystemProperties = bSyncToSystemProperties;
+    }
 
-  public boolean isbScanListenerAnnotation() {
-    return bScanListenerAnnotation;
-  }
+    public String getbBackOffRetryInterval() {
+        return bBackOffRetryInterval;
+    }
 
-  public void setbScanListenerAnnotation(boolean bScanListenerAnnotation) {
-    this.bScanListenerAnnotation = bScanListenerAnnotation;
-  }
+    public void setbBackOffRetryInterval(String bBackOffRetryInterval) {
+        this.bBackOffRetryInterval = bBackOffRetryInterval;
+    }
 
-  public String getSecretKey() {
-    return secretKey;
-  }
+    public String getMaxRetryTimes() {
+        return maxRetryTimes;
+    }
 
-  public void setSecretKey(String secretKey) {
-    this.secretKey = secretKey;
-  }
+    public void setMaxRetryTimes(String maxRetryTimes) {
+        this.maxRetryTimes = maxRetryTimes;
+    }
 
-  public String getbPrintConfigWhenBoot() {
-    return bPrintConfigWhenBoot;
-  }
+    public String getRetryIntervalSeconds() {
+        return retryIntervalSeconds;
+    }
 
-  public void setbPrintConfigWhenBoot(String bPrintConfigWhenBoot) {
-    this.bPrintConfigWhenBoot = bPrintConfigWhenBoot;
-  }
+    public void setRetryIntervalSeconds(String retryIntervalSeconds) {
+        this.retryIntervalSeconds = retryIntervalSeconds;
+    }
 
-  public String getbSyncToSystemProperties() {
-    return bSyncToSystemProperties;
-  }
+    public String getMaxRetryIntervalSeconds() {
+        return maxRetryIntervalSeconds;
+    }
 
-  public void setbSyncToSystemProperties(String bSyncToSystemProperties) {
-    this.bSyncToSystemProperties = bSyncToSystemProperties;
-  }
+    public void setMaxRetryIntervalSeconds(String maxRetryIntervalSeconds) {
+        this.maxRetryIntervalSeconds = maxRetryIntervalSeconds;
+    }
 
-  public String getbBackOffRetryInterval() {
-    return bBackOffRetryInterval;
-  }
+    @Override
+    public Object postProcessBeforeInitialization(Object bean, String beanName) throws BeansException {
+        return bean;
+    }
 
-  public void setbBackOffRetryInterval(String bBackOffRetryInterval) {
-    this.bBackOffRetryInterval = bBackOffRetryInterval;
-  }
+    @Override
+    public Object postProcessAfterInitialization(Object bean, String beanName) throws BeansException {
+        if (bScanListenerAnnotation) {
+            Method[] methods = ReflectionUtils.getAllDeclaredMethods(bean.getClass());
+            if (methods != null) {
+                for (Method method : methods) {
+                    OneKeyListener oneKeyListener = AnnotationUtils.findAnnotation(method, OneKeyListener.class);
+                    if (oneKeyListener != null) {
+                        logger.info("XDaimond add Annotation Method Listener, class:" + bean.getClass().getName()
+                                + ", method:" + method.getName());
+                        ObjectListenerMethodInvokeWrapper wrapper = new ObjectListenerMethodInvokeWrapper();
+                        wrapper.setxDiamondConfig(xDiamondConfig);
+                        wrapper.setListenerClassName(io.github.xdiamond.client.event.OneKeyListener.class.getName());
+                        wrapper.setKey(oneKeyListener.key());
+                        wrapper.setTargetObject(bean);
+                        wrapper.setTargetMethod(method.getName());
+                        wrapper.init();
+                    }
 
-  public String getMaxRetryTimes() {
-    return maxRetryTimes;
-  }
+                    AllKeyListener allKeyListener = AnnotationUtils.findAnnotation(method, AllKeyListener.class);
+                    if (allKeyListener != null) {
+                        logger.info("XDaimond add Annotation Method Listener, class:" + bean.getClass().getName()
+                                + ", method:" + method.getName());
+                        ObjectListenerMethodInvokeWrapper wrapper = new ObjectListenerMethodInvokeWrapper();
+                        wrapper.setxDiamondConfig(xDiamondConfig);
+                        wrapper.setListenerClassName(io.github.xdiamond.client.event.AllKeyListener.class.getName());
+                        wrapper.setTargetObject(bean);
+                        wrapper.setTargetMethod(method.getName());
+                        wrapper.init();
+                    }
+                }
+            }
+        }
 
-  public void setMaxRetryTimes(String maxRetryTimes) {
-    this.maxRetryTimes = maxRetryTimes;
-  }
-
-  public String getRetryIntervalSeconds() {
-    return retryIntervalSeconds;
-  }
-
-  public void setRetryIntervalSeconds(String retryIntervalSeconds) {
-    this.retryIntervalSeconds = retryIntervalSeconds;
-  }
-
-  public String getMaxRetryIntervalSeconds() {
-    return maxRetryIntervalSeconds;
-  }
-
-  public void setMaxRetryIntervalSeconds(String maxRetryIntervalSeconds) {
-    this.maxRetryIntervalSeconds = maxRetryIntervalSeconds;
-  }
-
-	@Override
-	public Object postProcessBeforeInitialization(Object bean, String beanName) throws BeansException {
-		return bean;
-	}
-
-	@Override
-	public Object postProcessAfterInitialization(Object bean, String beanName) throws BeansException {
-		if (bScanListenerAnnotation) {
-			Method[] methods = ReflectionUtils.getAllDeclaredMethods(bean.getClass());
-			if (methods != null) {
-				for (Method method : methods) {
-					OneKeyListener oneKeyListener = AnnotationUtils.findAnnotation(method, OneKeyListener.class);
-					if (oneKeyListener != null) {
-						logger.debug("XDaimond add Annotation Method Listener, class:" + bean.getClass().getName()
-								+ ", method:" + method.getName());
-						ObjectListenerMethodInvokeWrapper wrapper = new ObjectListenerMethodInvokeWrapper();
-						wrapper.setxDiamondConfig(xDiamondConfig);
-						wrapper.setListenerClassName(io.github.xdiamond.client.event.OneKeyListener.class.getName());
-						wrapper.setKey(oneKeyListener.key());
-						wrapper.setTargetObject(bean);
-						wrapper.setTargetMethod(method.getName());
-						wrapper.init();
-					}
-
-					AllKeyListener allKeyListener = AnnotationUtils.findAnnotation(method, AllKeyListener.class);
-					if (allKeyListener != null) {
-						logger.debug("XDaimond add Annotation Method Listener, class:" + bean.getClass().getName()
-								+ ", method:" + method.getName());
-						ObjectListenerMethodInvokeWrapper wrapper = new ObjectListenerMethodInvokeWrapper();
-						wrapper.setxDiamondConfig(xDiamondConfig);
-						wrapper.setListenerClassName(io.github.xdiamond.client.event.AllKeyListener.class.getName());
-						wrapper.setTargetObject(bean);
-						wrapper.setTargetMethod(method.getName());
-						wrapper.init();
-					}
-				}
-			}
-		}
-
-		return bean;
-	}
+        return bean;
+    }
 }
